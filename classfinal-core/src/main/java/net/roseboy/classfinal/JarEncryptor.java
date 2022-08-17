@@ -101,9 +101,25 @@ public class JarEncryptor {
                 + File.separator + "classes");
         Log.debug("临时目录：" + targetDir);
 
-        //[1]释放所有文件，内部jar只释放需要加密的jar
-        List<String> allFile = JarUtils.unJar(jarPath, this.targetDir.getAbsolutePath(), includeJars);
+        //[1]释放所有文件
+        List<String> allFile = JarUtils.unJar(jarPath, this.targetDir.getAbsolutePath());
         allFile.forEach(s -> Log.debug("释放：" + s));
+        //[1.1]内部jar只释放需要加密的jar
+        List<String> libJarFiles = new ArrayList<>();
+        allFile.forEach(path -> {
+            if (!path.toLowerCase().endsWith(".jar")) {
+                return;
+            }
+            String name = path.substring(path.lastIndexOf(File.separator) + 1);
+            if (StrUtils.isMatchs(this.includeJars, name, false)) {
+                String targetPath = path.substring(0, path.length() - 4) + Const.LIB_JAR_DIR;
+                List<String> files = JarUtils.unJar(path, targetPath);
+                files.forEach(s -> Log.debug("释放：" + s));
+                libJarFiles.add(path);
+                libJarFiles.addAll(files);
+            }
+        });
+        allFile.addAll(libJarFiles);
 
         //压缩静态文件
 //        allFile.forEach(s -> {
@@ -134,7 +150,7 @@ public class JarEncryptor {
         encryptConfigFile();
 
         //[7]打包回去
-        String result = packageJar();
+        String result = packageJar(libJarFiles);
 
         return result;
     }
@@ -155,8 +171,8 @@ public class JarEncryptor {
             //解析出类全名
             String className = resolveClassName(file, true);
             //判断包名相同和是否排除的类
-            if (ClassUtils.isPackage(this.packages, className)
-                    && !ClassUtils.isClass(this.excludeClass, className)) {
+            if (StrUtils.isMatchs(this.packages, className, false)
+                    && !StrUtils.isMatchs(this.excludeClass, className, false)) {
                 classFiles.add(new File(file));
                 Log.debug("待加密: " + file);
             }
@@ -285,11 +301,11 @@ public class JarEncryptor {
             File thisJarFile = new File(thisJar);
             if ("jar".endsWith(this.jarOrWar) && thisJar.endsWith(".jar")) {
                 List<String> includeFiles = Arrays.asList(Const.CLASSFINAL_FILES);
-                JarUtils.unJar(thisJar, this.targetDir.getAbsolutePath(), null, includeFiles, null);
+                JarUtils.unJar(thisJar, this.targetDir.getAbsolutePath(), includeFiles);
             } else if ("war".endsWith(this.jarOrWar) && thisJar.endsWith(".jar")) {
-                File targetlassFinalJar = new File(this.targetLibDir, thisJarFile.getName());
+                File targetClassFinalJar = new File(this.targetLibDir, thisJarFile.getName());
                 byte[] bytes = IoUtils.readFileToByte(thisJarFile);
-                IoUtils.writeFile(targetlassFinalJar, bytes);
+                IoUtils.writeFile(targetClassFinalJar, bytes);
             }
             //本项目开发环境中未打包
             else if (thisJar.endsWith("/classes/")) {
@@ -343,8 +359,9 @@ public class JarEncryptor {
             javaCode = javaCode.replace("${passchar}", StrUtils.toCharArrayCode(this.password));
             byte[] bytes = null;
             try {
-                String thisJar=this.getClass().getProtectionDomain().getCodeSource().getLocation().getPath();
-                bytes = ClassUtils.insertCode(clazz, javaCode, line, this.targetLibDir,new File(thisJar));
+                String thisJar = this.getClass().getProtectionDomain().getCodeSource().getLocation().getPath();
+                //获取 框架 读取 配置文件的类,将密码注入该类
+                bytes = ClassUtils.insertCode(clazz, javaCode, line, this.targetLibDir, new File(thisJar));
             } catch (Exception e) {
                 e.printStackTrace();
                 Log.debug(e.getClass().getName() + ":" + e.getMessage());
@@ -356,18 +373,19 @@ public class JarEncryptor {
             }
         });
 
-        encryptClass(aopClass);
+        //加密读取配置文件的类
+        this.encryptClass(aopClass);
         aopClass.forEach(cls -> cls.delete());
 
 
-        //[2].加密
+        //[2].加密配置文件
         List<File> configFiles = new ArrayList<>();
         File[] files = this.targetClassesDir.listFiles();
         if (files == null) {
             return;
         }
         for (File file : files) {
-            if (file.isFile() && ClassUtils.isClass(this.cfgfiles, file.getName())) {
+            if (file.isFile() && StrUtils.isMatchs(this.cfgfiles, file.getName(), false)) {
                 configFiles.add(file);
             }
         }
@@ -382,14 +400,13 @@ public class JarEncryptor {
      *
      * @return 打包后的jar绝对路径
      */
-    private String packageJar() {
+    private String packageJar(List<String> libJarFiles) {
         //[1]先打包lib下的jar
-        this.includeJars.forEach(jar -> {
-            if (!jar.endsWith(".jar")) {
+        libJarFiles.forEach(targetJar -> {
+            if (!targetJar.endsWith(".jar")) {
                 return;
             }
 
-            String targetJar = this.targetLibDir.getAbsolutePath() + File.separator + jar;
             String srcJarDir = targetJar.substring(0, targetJar.length() - 4) + Const.LIB_JAR_DIR;
             if (!new File(srcJarDir).exists()) {
                 return;
